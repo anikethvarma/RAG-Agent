@@ -1,4 +1,4 @@
-"""Configuration: model, retrieval settings and the system prompt."""
+"""Configuration: OpenRouter model, retrieval settings and the system prompt."""
 
 from __future__ import annotations
 
@@ -12,15 +12,19 @@ load_dotenv(ROOT / ".env")
 
 KB_DIR = Path(os.getenv("KB_DIR", ROOT / "knowledge_base"))
 
-MODEL = os.getenv("MODEL", "claude-opus-5-5")
-EFFORT = os.getenv("EFFORT", "medium")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Any free OpenRouter model (ids ending in ":free"). Run `python main.py --models`
+# to see which free models are available right now and which support tool calling.
+MODEL = os.getenv("MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+
+# "agent"  = the model calls a search tool itself (needs a model with tool support)
+# "simple" = retrieve first, then ask the model (works with every model)
+# The agent mode falls back to simple automatically if the model rejects tools.
+MODE = os.getenv("MODE", "agent")
+
 TOP_K = int(os.getenv("TOP_K", "3"))
 MAX_SEARCHES = int(os.getenv("MAX_SEARCHES", "3"))
-
-# Server-side refusal fallback (re-runs a declined request on a fallback model
-# inside the same API call). Set ENABLE_FALLBACKS=false to turn it off.
-ENABLE_FALLBACKS = os.getenv("ENABLE_FALLBACKS", "true").lower() != "false"
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
 
 SYSTEM_PROMPT = """You are the Helix Cloud internal helpdesk assistant.
 Answer employee questions about company policy using ONLY the knowledge base.
@@ -33,3 +37,15 @@ Answer employee questions about company policy using ONLY the knowledge base.
 - If the knowledge base doesn't contain the answer, say so plainly. Do not guess.
 - Keep the answer short (2-5 sentences) and cite the source doc ids in brackets,
   e.g. [pto_policy]."""
+
+SIMPLE_PROMPT = """You are the Helix Cloud internal helpdesk assistant.
+Answer the employee's question using ONLY the documents below.
+
+- If documents conflict, prefer the one marked CURRENT and ignore SUPERSEDED/ARCHIVED ones.
+- If the documents don't contain the answer, say so plainly. Do not guess.
+- Keep the answer short (2-5 sentences) and cite the source doc ids in brackets,
+  e.g. [pto_policy].
+
+<documents>
+{context}
+</documents>"""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -9,6 +10,15 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
+
+# Langfuse tracing is optional. Without keys, turn it off explicitly so the SDK
+# doesn't log an authentication error on every run.
+LANGFUSE_ENABLED = bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
+if not LANGFUSE_ENABLED:
+    os.environ.setdefault("LANGFUSE_TRACING_ENABLED", "false")
+    from langfuse.logger import langfuse_logger  # imported after load_dotenv(), as Langfuse requires
+
+    langfuse_logger.setLevel(logging.ERROR)  # hide the expected "no public_key" warning
 
 KB_DIR = Path(os.getenv("KB_DIR", ROOT / "knowledge_base"))
 

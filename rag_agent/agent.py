@@ -2,6 +2,17 @@
 
 OpenRouter exposes an OpenAI-compatible API, so the `openai` SDK is used with
 OpenRouter's base URL.
+
+Langfuse tracing (one trace per question / chat turn):
+
+    answer-question            agent      input: user question, output: answer
+    ├── generate-response      generation model, messages + tools in, reply + reasoning out, tokens, cost
+    ├── search-knowledge-base  retriever  input: query, output: retrieved chunks
+    ├── generate-response      generation
+    └── ...
+
+Chat turns share a `session_id`, so the Sessions view shows whole conversations.
+Tracing is a no-op when LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are not set.
 """
 
 from __future__ import annotations
@@ -12,9 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import openai
-from openai import OpenAI
 
-from .config import (
+from .config import (  # noqa: I001  (must come before the Langfuse imports: loads .env)
     KB_DIR,
     MAX_SEARCHES,
     MODE,
@@ -26,6 +36,15 @@ from .config import (
     TOP_K,
 )
 from .retriever import BM25Retriever, Chunk
+
+from langfuse import get_client, propagate_attributes  # noqa: E402
+from openai import OpenAI  # noqa: E402
+
+# Generations are recorded explicitly (see RAGAgent._complete) rather than with the
+# `langfuse.openai` drop-in, because the drop-in drops the `reasoning` field that
+# OpenRouter returns for thinking models, and Langfuse recommends capturing it.
+
+GENERATION_NAME = "generate-response"
 
 MAX_STEPS = 6
 
@@ -63,6 +82,11 @@ def make_client(api_key: str | None = None) -> OpenAI:
     )
 
 
+def flush_traces() -> None:
+    """Send buffered traces. Call before a short-lived process (the CLI) exits."""
+    get_client().flush()
+
+
 @dataclass
 class AgentResult:
     question: str
@@ -78,6 +102,22 @@ class AgentResult:
     @property
     def sources(self) -> list[str]:
         return list(dict.fromkeys(c.doc_id for c in self.retrieved))
+
+
+def _assistant_message(msg: Any) -> dict[str, Any]:
+    """The model's reply in OpenAI message format, including reasoning when the model returns it."""
+    out: dict[str, Any] = {"role": "assistant", "content": msg.content}
+    if msg.tool_calls:
+        out["tool_calls"] = [
+            {"id": tc.id, "type": "function",
+             "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+            for tc in msg.tool_calls
+        ]
+    extra = getattr(msg, "model_extra", None) or {}
+    reasoning = getattr(msg, "reasoning", None) or extra.get("reasoning") or extra.get("reasoning_content")
+    if reasoning:
+        out["reasoning"] = reasoning
+    return out
 
 
 def _tools_unsupported(err: openai.APIStatusError) -> bool:
@@ -104,23 +144,69 @@ class RAGAgent:
 
     # -- helpers -----------------------------------------------------------
     def _complete(self, messages: list[dict[str, Any]], result: AgentResult, tools: bool):
-        kwargs: dict[str, Any] = dict(model=self.model, messages=messages, temperature=TEMPERATURE)
+        kwargs: dict[str, Any] = dict(
+            model=self.model,
+            messages=messages,
+            temperature=TEMPERATURE,
+            extra_body={"usage": {"include": True}},  # ask OpenRouter to return usage + cost
+        )
         if tools:
             kwargs.update(tools=[SEARCH_TOOL], tool_choice="auto")
-        response = self.client.chat.completions.create(**kwargs)
-        if response.usage:
-            result.input_tokens += response.usage.prompt_tokens or 0
-            result.output_tokens += response.usage.completion_tokens or 0
-        if not response.choices:
-            raise RuntimeError(f"Model returned no choices: {response}")
-        return response.choices[0].message
+
+        with get_client().start_as_current_observation(
+            as_type="generation",
+            name=GENERATION_NAME,
+            model=self.model,
+            # Same shape the Langfuse OpenAI integration uses, so the UI renders a chat.
+            input={"messages": messages, "tools": [SEARCH_TOOL]} if tools else messages,
+            model_parameters={"temperature": TEMPERATURE, **({"tool_choice": "auto"} if tools else {})},
+        ) as generation:
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as err:
+                generation.update(level="ERROR", status_message=f"{err.__class__.__name__}: {err}")
+                raise
+            if not response.choices:
+                generation.update(level="ERROR", status_message="model returned no choices")
+                raise RuntimeError(f"Model returned no choices: {response}")
+
+            msg = response.choices[0].message
+            usage = response.usage
+            prompt_tokens = (usage.prompt_tokens or 0) if usage else 0
+            completion_tokens = (usage.completion_tokens or 0) if usage else 0
+            result.input_tokens += prompt_tokens
+            result.output_tokens += completion_tokens
+
+            cost = getattr(usage, "cost", None) if usage else None  # OpenRouter usage accounting (USD)
+            generation.update(
+                output=_assistant_message(msg),
+                usage_details={"input": prompt_tokens, "output": completion_tokens} if usage else None,
+                cost_details={"total": float(cost)} if isinstance(cost, (int, float)) else None,
+                metadata={"finish_reason": response.choices[0].finish_reason,
+                          "provider": getattr(response, "provider", None)},
+            )
+            return msg
 
     def _search(self, query: str, result: AgentResult) -> str:
-        hits = self.retriever.search(query, top_k=self.top_k)
-        result.searches.append(query)
-        seen = {c.chunk_id for c in result.retrieved}
-        result.retrieved.extend(c for c, _ in hits if c.chunk_id not in seen)
-        return "\n\n---\n\n".join(c.render() for c, _ in hits)
+        with get_client().start_as_current_observation(
+            as_type="retriever",
+            name="search-knowledge-base",
+            input={"query": query},
+            metadata={"top_k": self.top_k, "retriever": "bm25", "kb_dir": KB_DIR.name},
+        ) as span:
+            hits = self.retriever.search(query, top_k=self.top_k)
+            result.searches.append(query)
+            seen = {c.chunk_id for c in result.retrieved}
+            result.retrieved.extend(c for c, _ in hits if c.chunk_id not in seen)
+            span.update(
+                output=[
+                    {"doc_id": c.doc_id, "chunk_id": c.chunk_id, "score": round(score, 3),
+                     "title": c.title, "text": c.text}
+                    for c, score in hits
+                ],
+                metadata={"num_results": len(hits), "doc_ids": sorted({c.doc_id for c, _ in hits})},
+            )
+            return "\n\n---\n\n".join(c.render() for c, _ in hits)
 
     def _run_tool(self, arguments: str | None, result: AgentResult) -> str:
         output = self._run_tool_inner(arguments, result)
@@ -131,18 +217,67 @@ class RAGAgent:
         try:
             args = json.loads(arguments or "{}")
         except json.JSONDecodeError:
-            return "Error: tool arguments were not valid JSON. Call the tool again with {\"query\": \"...\"}."
+            return self._rejected_tool_call(
+                arguments, "Error: tool arguments were not valid JSON. Call the tool again with {\"query\": \"...\"}.")
         query = args.get("query") if isinstance(args, dict) else None
         if not isinstance(query, str) or not query.strip():
-            return "Error: `query` must be a non-empty string."
+            return self._rejected_tool_call(arguments, "Error: `query` must be a non-empty string.")
         if len(result.searches) >= self.max_searches:
-            return "Search limit reached. Answer now with the information you already have."
+            return self._rejected_tool_call(
+                arguments, "Search limit reached. Answer now with the information you already have.")
         return self._search(query, result)
 
+    @staticmethod
+    def _rejected_tool_call(arguments: str | None, message: str) -> str:
+        """Record a tool call that never reached the retriever, so it is visible in the trace."""
+        with get_client().start_as_current_observation(
+            as_type="tool", name="search-knowledge-base-rejected", input={"arguments": arguments},
+        ) as span:
+            span.update(output=message, level="WARNING", status_message=message)
+        return message
+
     # -- modes -------------------------------------------------------------
-    def run(self, question: str, history: list[dict[str, str]] | None = None) -> AgentResult:
-        """Answer `question`. `history` is earlier turns as [{"role": "user"|"assistant", "content": str}]."""
+    def run(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        tags: list[str] | None = None,
+    ) -> AgentResult:
+        """Answer `question`; one Langfuse trace per call.
+
+        history:    earlier turns as [{"role": "user"|"assistant", "content": str}]
+        session_id: groups the turns of one conversation in Langfuse's Sessions view
+        user_id:    who asked (per-user filtering and cost)
+        tags:       known-upfront dimensions, e.g. ["ui"] or ["cli"]
+        """
         history = [{"role": h["role"], "content": h["content"]} for h in (history or [])]
+        requested_mode = self.mode
+        with get_client().start_as_current_observation(
+            as_type="agent",
+            name="answer-question",
+            input=question,  # only the user's message, not the raw function arguments
+            metadata={"model": self.model, "mode": self.mode, "top_k": self.top_k,
+                      "max_searches": self.max_searches, "history_turns": len(history)},
+        ) as root:
+            with propagate_attributes(
+                trace_name="answer-question",
+                session_id=session_id,
+                user_id=user_id,
+                tags=tags,
+            ):
+                result = self._dispatch(question, history)
+            root.update(
+                output=result.answer,
+                metadata={"mode": result.mode, "fell_back_to_simple": result.mode != requested_mode,
+                          "searches": result.searches, "sources": result.sources,
+                          "input_tokens": result.input_tokens, "output_tokens": result.output_tokens},
+            )
+        return result
+
+    def _dispatch(self, question: str, history: list[dict[str, str]]) -> AgentResult:
         if self.mode == "simple":
             return self._run_simple(question, history)
         try:

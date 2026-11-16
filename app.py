@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 import streamlit as st
 
@@ -73,6 +74,7 @@ with st.sidebar:
     st.divider()
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.session_id = f"ui-{uuid.uuid4()}"  # new conversation = new Langfuse session
         st.rerun()
 
 
@@ -84,6 +86,9 @@ st.caption("Ask about company policies: PTO, travel, laptops, on-call pay, paren
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "session_id" not in st.session_state:
+    # One Langfuse session per chat conversation (one trace per turn).
+    st.session_state.session_id = f"ui-{uuid.uuid4()}"
 
 
 def render_details(details: dict) -> None:
@@ -143,7 +148,8 @@ if question:
             try:
                 agent = RAGAgent(client=make_client(api_key), retriever=retriever, model=model,
                                  mode=mode, top_k=top_k, max_searches=max_searches)
-                result = agent.run(question, history=history)
+                result = agent.run(question, history=history,
+                                   session_id=st.session_state.session_id, tags=["ui"])
             except Exception as e:
                 st.error(f"{e.__class__.__name__}: {e}")
                 st.session_state.messages.pop()

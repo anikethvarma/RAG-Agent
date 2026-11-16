@@ -16,7 +16,7 @@ from rag_agent.retriever import BM25Retriever
 
 def _resp(content=None, tool_calls=None):
     msg = NS(content=content, tool_calls=tool_calls)
-    return NS(choices=[NS(message=msg)], usage=NS(prompt_tokens=100, completion_tokens=20))
+    return NS(choices=[NS(message=msg, finish_reason="stop")], usage=NS(prompt_tokens=100, completion_tokens=20))
 
 
 class FakeCompletions:
@@ -96,3 +96,13 @@ def test_history_and_tool_calls_recorded():
     assert roles == ["system", "user", "assistant", "user"]
     assert res.tool_calls[0]["tool"] == "search_knowledge_base"
     assert "travel_expense_2025" in res.tool_calls[0]["result"]
+
+
+def test_assistant_message_keeps_reasoning_and_tool_calls():
+    from rag_agent.agent import _assistant_message
+
+    tc = NS(id="call_1", type="function", function=NS(name="search_knowledge_base", arguments='{"query": "x"}'))
+    msg = NS(content=None, tool_calls=[tc], model_extra={"reasoning": "Need to search first."})
+    out = _assistant_message(msg)
+    assert out["reasoning"] == "Need to search first."
+    assert out["tool_calls"][0]["function"]["arguments"] == '{"query": "x"}'

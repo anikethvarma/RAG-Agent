@@ -8,17 +8,20 @@
 from __future__ import annotations
 
 import sys
+import uuid
 
-from rag_agent.agent import RAGAgent, list_free_models
+from rag_agent.agent import RAGAgent, flush_traces, list_free_models
 
 
-def ask(agent: RAGAgent, question: str) -> None:
-    result = agent.run(question)
+def ask(agent: RAGAgent, question: str, history: list[dict[str, str]] | None = None,
+        session_id: str | None = None) -> str:
+    result = agent.run(question, history=history, session_id=session_id, tags=["cli"])
     print(f"\n{result.answer}\n")
     print(f"  model: {agent.model} ({result.mode} mode)")
     print(f"  sources: {', '.join(result.sources) or 'none'}")
     print(f"  searches: {result.searches}")
     print(f"  tokens: in={result.input_tokens} out={result.output_tokens}\n")
+    return result.answer
 
 
 def show_models() -> None:
@@ -36,9 +39,19 @@ def main() -> None:
         return
 
     agent = RAGAgent()
-    if args:
-        ask(agent, " ".join(args))
-        return
+    try:
+        if args:
+            ask(agent, " ".join(args))
+        else:
+            chat(agent)
+    finally:
+        flush_traces()  # short-lived process: send buffered Langfuse traces before exit
+
+
+def chat(agent: RAGAgent) -> None:
+    """Interactive chat with memory; all turns share one Langfuse session."""
+    session_id = f"cli-{uuid.uuid4()}"
+    history: list[dict[str, str]] = []
 
     print(f"Helix Cloud helpdesk ({agent.model}) — ask a question (empty line or Ctrl-D to quit).")
     while True:
@@ -48,7 +61,8 @@ def main() -> None:
             break
         if not question:
             break
-        ask(agent, question)
+        answer = ask(agent, question, history=history, session_id=session_id)
+        history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
 
 
 if __name__ == "__main__":

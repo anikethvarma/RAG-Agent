@@ -36,6 +36,7 @@ If the chosen model doesn't support tool calling, the agent switches to
 | `rag_agent/config.py` | Model, mode, retrieval settings, prompts |
 | `app.py` | Chat UI (Streamlit) |
 | `main.py` | CLI: one question, interactive chat, or list free models |
+| `.claude/skills/langfuse/` | Langfuse agent skill (from github.com/langfuse/skills) |
 | `test_questions.xlsx` | 32 test questions with expected answers |
 
 ## Setup
@@ -129,6 +130,56 @@ Set these in `.env` (all optional except the key):
 | `MAX_SEARCHES` | `3` | searches allowed per question (agent mode) |
 | `TEMPERATURE` | `0.1` | sampling temperature |
 | `KB_DIR` | `knowledge_base/` | folder of markdown documents |
+
+## Tracing with Langfuse (optional)
+
+Every question is traced to [Langfuse](https://langfuse.com) when keys are set.
+Without keys, tracing is off and the app works as before.
+
+1. Create a free account at https://langfuse.com/cloud (or self-host), create a
+   project, and copy its API keys from **Settings → API Keys**.
+2. Add them to `.env`:
+
+   ```
+   LANGFUSE_PUBLIC_KEY=pk-lf-...
+   LANGFUSE_SECRET_KEY=sk-lf-...
+   LANGFUSE_BASE_URL=https://cloud.langfuse.com
+   LANGFUSE_TRACING_ENVIRONMENT=development
+   ```
+
+   Use `https://us.cloud.langfuse.com` for the US region.
+
+3. Ask a question in the UI or CLI, then open **Tracing** in Langfuse.
+
+What each trace looks like (one trace per question / chat turn):
+
+```
+answer-question          agent       input: the user's question · output: the answer
+├─ generate-response     generation  messages + tool definitions in; reply, tool calls and reasoning out;
+│                                    model, input/output tokens, cost (from OpenRouter)
+├─ search-knowledge-base retriever   input: the search query · output: retrieved chunks (doc, score, text)
+├─ generate-response     generation
+└─ ...
+```
+
+- **Sessions:** all turns of one chat share a `session_id` (one per UI
+  conversation, cleared with "Clear chat"; one per interactive CLI run), so
+  **Sessions** in Langfuse replays whole conversations.
+- **Tags:** `ui` or `cli`, to filter by where a question came from.
+- **Environment:** set with `LANGFUSE_TRACING_ENVIRONMENT`, so local test
+  traces stay apart from production.
+- **Metadata on the root:** model, mode, `top_k`, searches made, sources used,
+  token totals, and `fell_back_to_simple` when a model rejected tool calls.
+- **Errors:** a failed model call is recorded as an `ERROR` generation with the
+  error message.
+
+Names are kept stable (`answer-question`, `generate-response`,
+`search-knowledge-base`) because Langfuse evaluators and dashboards select
+observations by name.
+
+The Langfuse agent skill (from https://github.com/langfuse/skills) is installed
+in `.claude/skills/langfuse`, so Claude Code sessions in this repo can use it
+for further Langfuse work: evaluations, datasets, prompt management.
 
 ## Notes on free models
 

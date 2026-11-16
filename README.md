@@ -173,6 +173,30 @@ answer-question          agent       input: the user's question · output: the a
 - **Errors:** a failed model call is recorded as an `ERROR` generation with the
   error message.
 
+### Not seeing traces?
+
+Run the connection check:
+
+```bash
+python main.py --check-tracing
+```
+
+It reports whether the keys were found (and in which `.env`), checks them
+against your Langfuse host, sends a test trace named `tracing-check`, and prints
+a link to it. The CLI also prints whether tracing is on at startup, plus a trace
+link after each answer. The UI shows the same status, a **Test Langfuse
+connection** button in the sidebar, and a **View trace in Langfuse** link under
+each answer.
+
+Common causes:
+
+| Symptom | Fix |
+|---|---|
+| "tracing OFF: … not found" | The keys aren't in `.env` next to `main.py`, or the lines still start with `#`. |
+| `401 Invalid credentials. Confirm that you've configured the correct host.` | The keys are from another region. Set `LANGFUSE_BASE_URL=https://us.cloud.langfuse.com` for US projects (EU is the default). |
+| The check passes but you don't see traces | Make sure you're in the project the keys belong to, and that the **Environment** filter in Langfuse includes your `LANGFUSE_TRACING_ENVIRONMENT` (or `default`). |
+| You edited `.env` but nothing changed | Restart `streamlit run app.py`; `.env` is read at startup. |
+
 Names are kept stable (`answer-question`, `generate-response`,
 `search-knowledge-base`) because Langfuse evaluators and dashboards select
 observations by name.

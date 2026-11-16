@@ -14,6 +14,7 @@ import streamlit as st
 from rag_agent.agent import SEARCH_TOOL, RAGAgent, list_free_models, make_client
 from rag_agent.config import KB_DIR, MAX_SEARCHES, MODE, MODEL, TOP_K
 from rag_agent.retriever import BM25Retriever
+from rag_agent.tracing import check_tracing, trace_url, tracing_status
 
 st.set_page_config(page_title="Helix Cloud Helpdesk", page_icon="💬", layout="wide")
 
@@ -72,6 +73,20 @@ with st.sidebar:
         st.markdown("\n".join(f"- `{d}`" for d in docs))
 
     st.divider()
+    st.header("Langfuse tracing")
+    lf_status = tracing_status()
+    if lf_status.enabled:
+        st.success(f"On → {lf_status.base_url}")
+        st.caption(f"Public key {lf_status.public_key} · environment '{lf_status.environment}'")
+    else:
+        st.warning("Off: no LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY found.")
+        st.caption(f"Looked in {lf_status.env_file}. Restart Streamlit after editing .env.")
+    if st.button("Test Langfuse connection", use_container_width=True):
+        with st.spinner("Checking…"):
+            ok, message = check_tracing()
+        (st.success if ok else st.error)(message)
+
+    st.divider()
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.session_id = f"ui-{uuid.uuid4()}"  # new conversation = new Langfuse session
@@ -109,6 +124,8 @@ def render_details(details: dict) -> None:
             f"Sources: {', '.join(details['sources']) or 'none'} · "
             f"tokens in {details['input_tokens']} / out {details['output_tokens']}"
         )
+        if details.get("trace_url"):
+            st.markdown(f"[View trace in Langfuse]({details['trace_url']})")
 
 
 for m in st.session_state.messages:
@@ -164,6 +181,7 @@ if question:
             "sources": result.sources,
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
+            "trace_url": trace_url(result.trace_id),
         }
         render_details(details)
     st.session_state.messages.append({"role": "assistant", "content": answer, "details": details})

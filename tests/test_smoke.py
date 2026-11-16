@@ -106,3 +106,19 @@ def test_assistant_message_keeps_reasoning_and_tool_calls():
     out = _assistant_message(msg)
     assert out["reasoning"] == "Need to search first."
     assert out["tool_calls"][0]["function"]["arguments"] == '{"query": "x"}'
+
+
+def test_env_file_loads_utf16_and_bom(tmp_path, monkeypatch):
+    from rag_agent.config import _load_env_file
+
+    for name, data in {
+        "utf16": "TEST_ENV_KEY_A=one\r\n".encode("utf-16"),
+        "bom": "﻿TEST_ENV_KEY_B=two\n".encode("utf-8"),
+    }.items():
+        path = tmp_path / f"{name}.env"
+        path.write_bytes(data)
+        _load_env_file(path)
+    import os
+
+    assert os.environ.pop("TEST_ENV_KEY_A") == "one"
+    assert os.environ.pop("TEST_ENV_KEY_B") == "two"

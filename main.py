@@ -3,6 +3,7 @@
     python main.py "How many PTO days do I get?"   # ask one question
     python main.py                                 # interactive chat
     python main.py --models                        # list free OpenRouter models
+    python main.py --check-tracing                 # test the Langfuse connection
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import sys
 import uuid
 
 from rag_agent.agent import RAGAgent, flush_traces, list_free_models
+from rag_agent.tracing import check_tracing, trace_url, tracing_status
 
 
 def ask(agent: RAGAgent, question: str, history: list[dict[str, str]] | None = None,
@@ -20,7 +22,10 @@ def ask(agent: RAGAgent, question: str, history: list[dict[str, str]] | None = N
     print(f"  model: {agent.model} ({result.mode} mode)")
     print(f"  sources: {', '.join(result.sources) or 'none'}")
     print(f"  searches: {result.searches}")
-    print(f"  tokens: in={result.input_tokens} out={result.output_tokens}\n")
+    print(f"  tokens: in={result.input_tokens} out={result.output_tokens}")
+    if result.trace_id:
+        print(f"  trace: {trace_url(result.trace_id) or result.trace_id}")
+    print()
     return result.answer
 
 
@@ -37,7 +42,16 @@ def main() -> None:
     if args == ["--models"]:
         show_models()
         return
+    if args == ["--check-tracing"]:
+        status = tracing_status()
+        print(status.summary())
+        print(f"  .env file:   {status.env_file}\n  secret key:  {status.secret_key}\n"
+              f"  SDK version: langfuse {status.sdk_version}\n")
+        ok, message = check_tracing()
+        print(("OK: " if ok else "PROBLEM: ") + message)
+        sys.exit(0 if ok else 1)
 
+    print(tracing_status().summary())
     agent = RAGAgent()
     try:
         if args:

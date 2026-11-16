@@ -98,6 +98,7 @@ class AgentResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    trace_id: str | None = None  # Langfuse trace of this answer (None when tracing is off)
 
     @property
     def sources(self) -> list[str]:
@@ -269,6 +270,7 @@ class RAGAgent:
                 tags=tags,
             ):
                 result = self._dispatch(question, history)
+            result.trace_id = getattr(root, "trace_id", None)
             root.update(
                 output=result.answer,
                 metadata={"mode": result.mode, "fell_back_to_simple": result.mode != requested_mode,

@@ -9,10 +9,26 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
+ENV_FILE = ROOT / ".env"
+
+
+def _load_env_file(path: Path) -> None:
+    """Load .env, also when Windows saved it as UTF-16 (e.g. PowerShell `echo ... > .env`)."""
+    if not path.is_file():
+        return
+    head = path.read_bytes()[:4]
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    else:
+        encoding = "utf-8-sig"  # also strips a UTF-8 byte-order mark (Notepad)
+    load_dotenv(path, encoding=encoding)
+
+
+_load_env_file(ENV_FILE)
 
 # Langfuse tracing is optional. Without keys, turn it off explicitly so the SDK
-# doesn't log an authentication error on every run.
+# doesn't log an authentication error on every run. The app reports the status at
+# startup (see rag_agent/tracing.py), so this never fails silently.
 LANGFUSE_ENABLED = bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
 if not LANGFUSE_ENABLED:
     os.environ.setdefault("LANGFUSE_TRACING_ENABLED", "false")

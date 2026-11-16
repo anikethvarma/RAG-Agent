@@ -51,8 +51,8 @@ SEARCH_TOOL = {
 }
 
 
-def make_client() -> OpenAI:
-    api_key = os.getenv("OPENROUTER_API_KEY")
+def make_client(api_key: str | None = None) -> OpenAI:
+    api_key = api_key or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("OPENROUTER_API_KEY is not set. Create a free key at openrouter.ai and put it in .env")
     return OpenAI(
@@ -70,6 +70,8 @@ class AgentResult:
     mode: str = MODE
     retrieved: list[Chunk] = field(default_factory=list)
     searches: list[str] = field(default_factory=list)
+    # Every tool call the model made: {"tool", "arguments", "result"} (shown in the UI)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
 
@@ -121,6 +123,11 @@ class RAGAgent:
         return "\n\n---\n\n".join(c.render() for c, _ in hits)
 
     def _run_tool(self, arguments: str | None, result: AgentResult) -> str:
+        output = self._run_tool_inner(arguments, result)
+        result.tool_calls.append({"tool": "search_knowledge_base", "arguments": arguments, "result": output})
+        return output
+
+    def _run_tool_inner(self, arguments: str | None, result: AgentResult) -> str:
         try:
             args = json.loads(arguments or "{}")
         except json.JSONDecodeError:
@@ -133,34 +140,40 @@ class RAGAgent:
         return self._search(query, result)
 
     # -- modes -------------------------------------------------------------
-    def run(self, question: str) -> AgentResult:
+    def run(self, question: str, history: list[dict[str, str]] | None = None) -> AgentResult:
+        """Answer `question`. `history` is earlier turns as [{"role": "user"|"assistant", "content": str}]."""
+        history = [{"role": h["role"], "content": h["content"]} for h in (history or [])]
         if self.mode == "simple":
-            return self._run_simple(question)
+            return self._run_simple(question, history)
         try:
-            return self._run_agent(question)
+            return self._run_agent(question, history)
         except openai.APIStatusError as err:
             if not _tools_unsupported(err):
                 raise
             print(f"[{self.model} does not support tool calling here; using simple mode]")
             self.mode = "simple"
-            return self._run_simple(question)
+            return self._run_simple(question, history)
 
-    def _run_simple(self, question: str) -> AgentResult:
+    def _run_simple(self, question: str, history: list[dict[str, str]]) -> AgentResult:
         """Classic RAG: retrieve with the question, then answer in one call."""
         result = AgentResult(question=question, answer="", mode="simple")
         context = self._search(question, result)
+        result.tool_calls.append({"tool": "search_knowledge_base (automatic, simple mode)",
+                                  "arguments": json.dumps({"query": question}), "result": context})
         messages = [
             {"role": "system", "content": SIMPLE_PROMPT.format(context=context)},
+            *history,
             {"role": "user", "content": question},
         ]
         result.answer = (self._complete(messages, result, tools=False).content or "").strip()
         return result
 
-    def _run_agent(self, question: str) -> AgentResult:
+    def _run_agent(self, question: str, history: list[dict[str, str]]) -> AgentResult:
         """Agentic RAG: the model decides when and what to search."""
         result = AgentResult(question=question, answer="", mode="agent")
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            *history,
             {"role": "user", "content": question},
         ]
         for _ in range(MAX_STEPS):

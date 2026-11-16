@@ -85,3 +85,14 @@ def test_bad_tool_arguments_and_search_limit():
     assert "not valid JSON" in agent._run_tool("{oops", result)
     assert "travel" in agent._run_tool('{"query": "hotel"}', result)
     assert "limit" in agent._run_tool('{"query": "per diem"}', result)
+
+
+def test_history_and_tool_calls_recorded():
+    client = fake_client("hotel London", "$320/night [travel_expense_2025].")
+    history = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
+    res = RAGAgent(client=client, mode="agent").run("Hotel cap in London?", history=history)
+    # the list keeps growing after the call, so check the first four entries
+    roles = [m["role"] for m in client.chat.completions.calls[0]["messages"]][:4]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert res.tool_calls[0]["tool"] == "search_knowledge_base"
+    assert "travel_expense_2025" in res.tool_calls[0]["result"]

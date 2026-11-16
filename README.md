@@ -34,6 +34,7 @@ If the chosen model doesn't support tool calling, the agent switches to
 | `rag_agent/retriever.py` | Dependency-free BM25 retriever |
 | `rag_agent/agent.py` | Agent loop using the `openai` SDK pointed at OpenRouter |
 | `rag_agent/config.py` | Model, mode, retrieval settings, prompts |
+| `app.py` | Chat UI (Streamlit) |
 | `main.py` | CLI: one question, interactive chat, or list free models |
 | `test_questions.xlsx` | 32 test questions with expected answers |
 
@@ -59,7 +60,40 @@ If the chosen model doesn't support tool calling, the agent switches to
 
    Then set `OPENROUTER_API_KEY` in `.env`.
 
-## Usage
+## Chat UI
+
+```bash
+streamlit run app.py
+```
+
+This opens a chat page in your browser (http://localhost:8501). It has:
+
+- a chat with memory, so follow-up questions work ("And in London?")
+- a sidebar to pick the free model (🔧 marks models that support tool calling),
+  the mode, and the search settings
+- a **Tools the agent can use** panel
+- under each answer, an expandable list of every tool call the agent made: the
+  search query, the text it got back, the source documents and token counts
+
+If `OPENROUTER_API_KEY` isn't in `.env`, the sidebar asks for it.
+
+## Tools the agent can use
+
+The agent has one tool:
+
+| Tool | Input | What it does |
+|---|---|---|
+| `search_knowledge_base` | `query` (text) | Keyword (BM25) search over the documents in `knowledge_base/`. Returns the `TOP_K` best-matching sections, each labelled with its doc id. |
+
+The model decides when to call it and with what query, and can call it up to
+`MAX_SEARCHES` times per question. It has no other access: no web, no files
+outside the knowledge base, no code execution. In `simple` mode the model
+calls no tools; the search runs automatically with the question.
+
+To add a tool, define it next to `SEARCH_TOOL` in `rag_agent/agent.py`, add it
+to the `tools` list in `_complete`, and handle its name in `_run_agent`.
+
+## Command line
 
 See which free models are available right now (tool-capable ones are listed first):
 
